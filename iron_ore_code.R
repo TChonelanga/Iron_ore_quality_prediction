@@ -113,7 +113,11 @@ components <- cbind(silica = train_pca[,"silica_concentrate"],
 pca_model <- train(silica ~ ., method = "lm", data = components)
 summary(pca_model)
 
+<<<<<<< HEAD
 #Test pca linear regression model performance on new data
+=======
+#Test pca model performance on new data
+>>>>>>> 44962c4fda3674adbacca4fa780077dfb3695054
 
 test_pca <- predict(pca_1,test_set) %>% as.data.frame() %>%
   mutate(silica = test_set[,"silica_concentrate"]) %>%
