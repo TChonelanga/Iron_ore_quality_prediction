@@ -1,0 +1,163 @@
+---
+title: "Iron Ore Quality Prediction"
+author: "Tholang Chonelanga"
+date: "2023-01-23"
+output: html_document
+---
+
+```{r setup, include=FALSE, warning=FALSE, message=FALSE}
+library(tidyverse)
+library(lubridate)
+library(corrplot)
+library(caret)
+data <-   read.csv("~/MiningProcess_Flotation_Plant_Database.csv", 
+                 header = TRUE)
+```
+
+### Introduction
+
+Flotation is a process in which pulp containing some mineral ore deposit is fed into a plant with some reagents such that at the end of the process, pure mineral is collected while all impurities stay in the plant.In this project, the mineral of interest is iron ore.The quality of iron ore in a mining flotation plant is determined by the amount of silica (SiO~2~) in the ore concentrate; a higher silica amount is indicative of a more impure sample. In this project the objective is to use other variables from the plant to try and predict the silica content. This will be helpful in improving productivity as there is at least one hour that has to be waited before obtaining the silica content reading of each sample sent to the lab, and many samples are sent in a day,creating a lot of dead time. Prediction using machine learning would save this time. The R code used to create this report is found in the iron_ore_code.R file that goes with this report.
+
+## Dataset
+
+The `data` dataset taken from [kaggle](https://www.kaggle.com/datasets/edumagalhaes/quality-prediction-in-a-mining-process) contains 7 37 453 entries of 24 variables from an iron ore mining flotation plant. The variables are attributes of the plant like pulp density,  pulp pH and flow rate, amount of iron and silica in the feed, flow rates of the reagents used in the plant. Below are the first six lines of the dataset.
+
+```{r, echo = FALSE, warning=FALSE, message=FALSE}
+head(data)
+```
+
+## Cleaning The Dataset
+
+All variables except date are numeric, but are not written in the correct format, with commas making them character strings. The date variable is also not in the datetime type. Cleaning this dataset will just be about making all variables numeric and datetime for the date variable, and also renaming the long variable names to shorter versions that will be quicker to write.Hourly entries will also have to be aggregated, because as seen in the dataset, there are different readings of all the other variables for each 60 entries with the same silica content reading. This is because all those entries belong to a single batch of ore taken to the lab to obtain the silica content reading, that comes after one hour.These values will be combined and an average taken for each variable to correspond with each unique value of silica concentrate.Below are the first six lines of the cleaned dataset.
+
+```{r, echo = FALSE, warning=FALSE, message=FALSE}
+data <- data %>% mutate_at(vars(2:24), ~   str_replace(.,",","."))
+data <- data %>% mutate_at(vars(2:24), ~ as.numeric(.))
+data$date <- gsub('""'," ", data$date)
+data <- data %>% mutate_at(vars(1), ~ as_datetime(.))
+data <- data %>% rename(silica_concentrate = X..Silica.Concentrate,
+                        iron_concentrate = X..Iron.Concentrate,
+                        pulp_density = Ore.Pulp.Density,
+                        pulp_flow = Ore.Pulp.Flow,
+                        pulp_ph = Ore.Pulp.pH,
+                        amina_flow = Amina.Flow,
+                        starch_flow = Starch.Flow,
+                        silica_feed = X..Silica.Feed,
+                        iron_feed = X..Iron.Feed)
+
+
+names(data)[9:15] <- paste0("air_flow_",1:7)
+names(data)[16:22] <- paste0("column_level_",1:7)
+
+data <- aggregate(data[,2:24],list(data$date), mean)
+data <- data %>% rename(date = Group.1)
+head(data)
+```
+
+## Exploratory Data Analysis
+
+The first step is to check the summary statistics of each variable, to see how variable each one is. Then explore the distribution of the response variable, and then checking how it changes with time. This can be done by plotting silica content against time and observe whether or not there is an obvious pattern. The first plot is the distribution of silica content in the concentrate, is it changing at all and if yes how? The second plot shows silica content over the course of the three months in which these data were collected.
+
+```{r, echo = FALSE, warning=FALSE, message=FALSE}
+summary(data)
+```
+
+The summary shows that although almost all these variables are in the same order of magnitude, they are not exactly the same. The numbers are similar. Starch flow is the only variable in which the minimum is in the different order of magnitude from the rest of the other numbers. 
+
+```{r, echo = FALSE, warning=FALSE, message=FALSE}
+hist(data$silica_concentrate, main = "Distribution of silica content in the concentrate")
+```
+
+It can be seen that the distribution of the response variable is highly variable.
+
+```{r, echo = FALSE, warning=FALSE, message=FALSE}
+data %>% ggplot(aes(date,silica_concentrate)) + geom_line() +
+  ggtitle("Silica content in concentrate over time")
+```
+
+Looking at this plot shows that there is no clear pattern between the response variable and time in the whole of these three months.Maybe zooming in on just one month will be clearer :
+
+```{r, echo = FALSE, warning=FALSE, message=FALSE}
+data <- data %>% mutate(month = month(date),
+                        day = day(date))
+data %>% filter (month == 3) %>% 
+  ggplot(aes(date,silica_concentrate)) +
+  geom_line() +
+  ggtitle("Plot of silica content in concentrate over time for the month of March")
+```
+
+There still is no clear pattern. Below I check by a single day, will pick two random days to see if there is any relationship between silica content and say time of day.
+
+```{r, echo = FALSE, warning=FALSE, message=FALSE}
+data %>% filter(month == 3, day == 10) %>%
+  ggplot(aes(date,silica_concentrate)) +
+  geom_line() + 
+  ggtitle("Plot of silica content in concentrate over time for the 10th day of March")
+
+
+data %>% filter (month == 3, day == 11) %>%
+  ggplot(aes(date,silica_concentrate)) +
+  geom_line() +
+  ggtitle("Plot of silica content in concentrate over time for the 11th day of March")
+```
+
+Both plots show that there is no obvious pattern. Next I move on to checking if all these variables are correlated with the response variable and with one another.This is in the correlation plot below:
+
+```{r, echo = FALSE, warning=FALSE, message=FALSE}
+data %>% select(-date) %>% cor()%>% corrplot()
+```
+
+The only variable that is clearly strongly correlated with the response variable as seen from the plot is iron concentrate, which is the amount of iron in the concentrate. It is a negative correlation and it makes sense because the more iron there is the less contaminant there will be and vice versa. All the variables do not seem to individually have a direct correlation with the response variable, but there are some variables that positively or negatively, correlated with one another.
+
+## Building A Predictive Model
+
+Since all of the variables except date, in the dataset are numeric, the first option algorithm to explore is linear regression. The dataset is split into the training and test sets, and then a model is trained using linear regression and its performance tested on the test set. Because it has already been seen that many of the variables are correlated with one another, it is likely that the model will not fit the data with high efficiency due to the redundance in the features. Therefore, principal component analysis will be used to reduce the dimensions in the features and see whether or not the model fit will improve. Below is the summary of the model run with linear regression:
+
+```{r, echo = FALSE, warning=FALSE, message=FALSE}
+set.seed(5, sample.kind = "Rounding")
+test_index <- createDataPartition(data$silica_concentrate,times = 1,
+                                p = 0.2, list = FALSE)
+train_set <- data[-test_index,]
+test_set <- data[test_index,]
+lm_model <- train(silica_concentrate ~ ., data = train_set, 
+                  method = "lm")
+summary(lm_model)
+```
+
+As anticipated, the model does not fit the data well enough, the adjusted R-squared value is 0.6871, so there might still be room for improvement. BUt first the model is tested on test data to see its performance on new data. Below is the RMSE value obtained from comparing predictions on the test set with real values:
+
+```{r, echo = FALSE, warning=FALSE, message=FALSE}
+set.seed(5,sample.kind = "Rounding")
+lm_predictions <- predict(lm_model, test_set)
+RMSE(lm_predictions, test_set$silica_concentrate)
+```
+
+This RMSE value, 0.61 is almost equal to the minimim value of this variable in the dataset, it is a big error that the model makes when trying to predict. Maybe applying pca will bring it down. Below is the summary of model fit after applying pca:
+
+```{r, echo = FALSE, warning=FALSE, message=FALSE}
+set.seed(5,sample.kind = "Rounding")
+train_pca <- train_set %>% select(-date)
+pca_1 <- prcomp(as.matrix(train_pca),center = TRUE, scale. = TRUE)
+summary(pca_1)
+components <- cbind(silica = train_pca[,"silica_concentrate"],
+                   pca_1$x[,1:15]) %>% as.data.frame()
+pca_model <- train(silica ~ ., method = "lm", data = components)
+summary(pca_model)
+```
+
+The results show that the adjusted R-squared is now 0.92, a big improvement from a linear regression without pca. They also show that after 15 principal components, 95% of the variance in the data has already been accounted for, so the dimensions can definately be reduced. Below we check how the linear regression model after reducing the dimensions using pca performs on new data by checking the RMSE value returned. 
+
+```{r, echo = FALSE, warning= FALSE, message=FALSE}
+set.seed(5,sample.kind = "Rounding")
+test_pca <- predict(pca_1,test_set) %>% as.data.frame() %>%
+  mutate(silica = test_set[,"silica_concentrate"]) %>%
+  select(PC1:PC15,silica)
+pca_predictions <- predict(pca_model,test_pca)
+RMSE(pca_predictions,test_pca$silica)
+```
+
+The RMSE value for the liner regression model after first performing pca is now 0.32, almost half of that without pca.
+
+## Conclusion and further work
+
+The linear regression model build here fits the data fairly well and predicts the target variable on new data with fairly good accuracy too.It makes an error of about 0.32 units when predicting the silica content in the concentrate. However, it is unknown whether or not this error is acceptable for this specific plant, because no further information is given regarding this flotation process. What margin of error can be acceptable for them?  And what are the implications of making an error? More information is needed to better understand the process and this could be achieved by talking with the people concerned, about the process. With more information available then maybe more algorithms may be deployed to build a model with even better prediction accuracy.
